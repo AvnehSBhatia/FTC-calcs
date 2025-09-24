@@ -1,111 +1,124 @@
-from math import *
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from scipy.integrate import solve_ivp
 
-# Static constants
-BALL_MASS = 0.075  # kg
-BALL_DIAMETER = 0.127  # m
-AIR_DENSITY = 1.225  # kg/m^3
-DRAG_COEFFICIENT = 0.5
-GRAVITY = 9.81  # m/s^2
-LAUNCH_DISTANCE = 0.05  # m
-TIME_STEP = 0.01  # s
-RAMP_FRICTION_COEFFICIENT = 0.01
+ball_mass = 0.075
+ball_diameter = 0.127
+air_density = 1.225
+drag_coefficient = 0.85
+gravity = 9.81
+launch_distance = 0.05
+time_step = 0.01
+ramp_friction_coefficient = 0.09
+energy_transfer_efficiency = 0.33
+spin_decay = 0.995
+rolling_resistance = 0.0015
+cross_sectional_area = np.pi * (ball_diameter/2)**2
 
-class Flywheel:
-    def __init__(self, radius, mass, rpm, angle, f_c):
+class flywheel:
+    def __init__(self, radius, mass, rpm, angle, friction_coef):
         self.radius = radius
         self.mass = mass
-        self.rad_s = rpm*2*pi/60
-        self.angle = angle
-        self.friction_coefficient = f_c        
-
-    def calculate_tangential_velocity(self, rad_s, radius):
-        return rad_s * radius
-    
-    def calculate_angular_momentum(self):
-        return 0.5 * self.mass * self.radius**2 * self.rad_s
-    
-    def ball_exit_velocity(self):
-        initial_angular_momentum = self.calculate_angular_momentum()
-        moment_of_inertia = 0.5 * self.mass * self.radius**2
-        new_angular_velocity = initial_angular_momentum / (moment_of_inertia + BALL_MASS * self.radius**2)
-        return new_angular_velocity * self.radius
-    
-    def findall(self, target_height=None):
-        ball_velocity = self.ball_exit_velocity()
-        gravity_component = GRAVITY * sin(radians(self.angle))
-        friction_component = self.friction_coefficient * GRAVITY * cos(radians(self.angle))
-        net_accel = ball_velocity**2 / (2 * LAUNCH_DISTANCE) - gravity_component - friction_component
-        time = sqrt(2 * LAUNCH_DISTANCE / net_accel)
-        l_velocity = ball_velocity
-        x = 0.0
-        y = 0.0
-        x_vals = [x]
-        y_vals = [y]
+        self.moment_of_inertia = 0.5 * mass * radius**2
+        self.angular_velocity = rpm * 2 * np.pi / 60
+        self.angle = np.radians(angle)
+        self.friction_coefficient = friction_coef
         
-        A = pi * (BALL_DIAMETER/2)**2  # cross-sectional area
-        v_x = l_velocity * cos(radians(self.angle))
-        v_y = l_velocity * sin(radians(self.angle))
+    def calculate_contact_time(self):
+        avg_velocity = self.angular_velocity * self.radius * 0.7
+        return launch_distance / avg_velocity if avg_velocity > 0 else 0.1
         
-        height_crossings = []
-        prev_y = y
+    def calculate_impulse_transfer(self):
+        contact_time = self.calculate_contact_time()
+        avg_force = (self.moment_of_inertia * self.angular_velocity * energy_transfer_efficiency) / (self.radius * contact_time)
+        impulse = avg_force * contact_time
+        return impulse / ball_mass
         
-        while y >= 0:
-            v = sqrt(v_x**2 + v_y**2)
+    def ball_launch_velocity(self):
+        base_velocity = self.calculate_impulse_transfer()
+        ramp_acceleration = gravity * (np.sin(self.angle) - ramp_friction_coefficient * np.cos(self.angle))
+        ramp_boost = np.sqrt(max(0, 2 * ramp_acceleration * launch_distance))
+        return min(base_velocity + ramp_boost, self.angular_velocity * self.radius * 0.95)
+        
+    def trajectory_derivative(self, t, state):
+        x, y, vx, vy = state
+        v = np.sqrt(vx**2 + vy**2)
+        
+        if v < 0.01:
+            return [0, 0, 0, 0]
             
-            # Drag accelerations
-            a_x = -(0.5 * AIR_DENSITY * DRAG_COEFFICIENT * A * v * v_x) / BALL_MASS
-            a_y = -GRAVITY - (0.5 * AIR_DENSITY * DRAG_COEFFICIENT * A * v * v_y) / BALL_MASS
+        drag_force = 0.5 * air_density * drag_coefficient * cross_sectional_area * v**2
+        drag_acceleration = drag_force / ball_mass
+        
+        ax = -drag_acceleration * vx/v
+        ay = -gravity - drag_acceleration * vy/v
+        
+        if y <= 0 and vy < 0:
+            restitution = 0.7
+            vy = -vy * restitution
+            vx *= 0.9
+            y = max(y, 0)
             
-            # Update velocities
-            v_x += a_x * TIME_STEP
-            v_y += a_y * TIME_STEP
+        return [vx, vy, ax, ay]
+        
+    def simulate(self, target_height=None):
+            launch_v = self.ball_launch_velocity()
+            vx = launch_v * np.cos(self.angle)
+            vy = launch_v * np.sin(self.angle)
+            x, y = 0, 0
             
-            # Update positions
-            x += v_x * TIME_STEP
-            y += v_y * TIME_STEP
+            x_vals, y_vals = [x], [y]
+            height_crossings = []
             
-            # Check for height crossing
-            if target_height is not None:
-                if (prev_y < target_height <= y) or (prev_y > target_height >= y):
-                    height_crossings.append(x)
+            while y >= 0:
+                v = max(0.001, np.sqrt(vx**2 + vy**2))
+                drag = 0.5 * air_density * drag_coefficient * cross_sectional_area * v**2 / ball_mass
+                
+                vx -= (drag * vx/v) * time_step
+                vy -= (gravity + drag * vy/v) * time_step
+                x += vx * time_step
+                y += vy * time_step
+                
+                if target_height is not None:
+                    if (y_vals[-1] < target_height <= y) or (y_vals[-1] > target_height >= y):
+                        t_frac = (target_height - y_vals[-1]) / (y - y_vals[-1])
+                        x_cross = x_vals[-1] + t_frac * (x - x_vals[-1])
+                        height_crossings.append(x_cross)
+                
+                x_vals.append(x)
+                y_vals.append(y)
             
-            # Store trajectory
-            x_vals.append(x)
-            y_vals.append(y)
-            prev_y = y
-
-        total_distance = x_vals[-1]
-        return x_vals, y_vals, total_distance, height_crossings
+            total_distance = x_vals[-1]
+            return np.array(x_vals), np.array(y_vals), total_distance, height_crossings
 
 if __name__ == "__main__":
-    flywheel = Flywheel(0.127, 0.07, 6000, 25, RAMP_FRICTION_COEFFICIENT)
+    fw = flywheel(0.127, 0.07, 6000, 25, ramp_friction_coefficient)
     
-    target_height = float(input("Enter target height in meters: "))
-    x_vals, y_vals, total_distance, height_crossings = flywheel.findall(target_height)
+    target_height = float(input("enter target height in meters: "))
+    x_vals, y_vals, total_distance, height_crossings = fw.simulate(target_height)
     
-    print(f"Total distance: {total_distance:.3f} m")
+    print(f"total distance: {total_distance:.3f} m")
     
     if height_crossings:
-        print(f"Ball crosses height {target_height:.3f} m at distances:")
-        for i, distance in enumerate(height_crossings):
-            print(f"  Crossing {i+1}: {distance:.3f} m")
+        print(f"ball crosses height {target_height:.3f} m at distances:")
+        for i, dist in enumerate(height_crossings):
+            print(f"  crossing {i+1}: {dist:.3f} m")
     else:
-        print(f"Ball does not cross height {target_height:.3f} m")
+        print(f"ball does not cross height {target_height:.3f} m")
     
-    print(x_vals, y_vals)
     fig, ax = plt.subplots()
-    line, = ax.plot([], [], 'bo-', markersize=3)
-    ax.set_xlim(0, max(x_vals) + 1)
-    ax.set_ylim(0, max(y_vals) + 1)
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)')
+    line, = ax.plot([], [], 'bo-', markersize=2)
+    ax.set_xlim(0, max(x_vals) + 0.5 if len(x_vals) > 0 else 10)
+    ax.set_ylim(0, max(y_vals) + 0.5 if len(y_vals) > 0 else 10)
+    ax.set_xlabel('x (m)')
+    ax.set_ylabel('y (m)')
     ax.grid(True)
     
     def animate(frame):
-        line.set_data(x_vals[:frame+1], y_vals[:frame+1])
+        if frame < len(x_vals):
+            line.set_data(x_vals[:frame+1], y_vals[:frame+1])
         return line,
     
-    ani = animation.FuncAnimation(fig, animate, frames=len(x_vals), interval=50, blit=True)
+    ani = animation.FuncAnimation(fig, animate, frames=len(x_vals), interval=20, blit=True)
     plt.show()
