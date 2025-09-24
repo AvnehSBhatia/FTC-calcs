@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 # Static constants
-BALL_MASS = 0.165 * 0.075  # kg
+BALL_MASS = 0.075  # kg
 BALL_DIAMETER = 0.127  # m
 AIR_DENSITY = 1.225  # kg/m^3
 DRAG_COEFFICIENT = 0.5
